@@ -1,168 +1,158 @@
 import numpy as np
-# IEEE 5-bus system parameters (using base MVA = 100 MW for conversion)
 
 # Bus data [V_nominal=1.0 pu, Angle_initial=0 radians]
+# P_spec = Net Active Power (Generation - Load)
+# Q_spec = Net Reactive Power (Generation - Load)
 BUSSES = {
-    'Bus1': {'V_nom': 1.06, 'Angle_init': 0, 'type': 'slack', 'P_spec': None, 'Q_spec': None}, # Slack bus: P/Q are calculated
-    'Bus2': {'V_nom': 1.0, 'Angle_init': 0, 'type': 'pv', 'P_spec': 0.4, 'Q_spec': 0.3}, # PV Generator (40 MW)
-    'Bus3': {'V_nom': 1.0, 'Angle_init': 0, 'type': 'pq', 'P_spec': -0.45, 'Q_spec': -0.15}, # Load: 5 MW / 10 Mvar
-    'Bus4': {'V_nom': 1.0, 'Angle_init': 0, 'type': 'pq', 'P_spec': -0.4, 'Q_spec': -0.05}, # Load: 5 MW / 15 Mvar
-    'Bus5': {'V_nom': 1.0, 'Angle_init': 0, 'type': 'pq', 'P_spec': -0.6, 'Q_spec': -0.1}  # Load: 6 MW / 10 Mvar
+    'Bus1': {'V_nom': 1.06, 'Angle_init': 0.0, 'type': 'slack', 'P_spec': 0.0, 'Q_spec': 0.0},
+    'Bus2': {'V_nom': 1.00, 'Angle_init': 0.0, 'type': 'pv',    'P_spec': 0.20, 'Q_spec': 0.0},
+    'Bus3': {'V_nom': 1.00, 'Angle_init': 0.0, 'type': 'pq',    'P_spec': -0.45, 'Q_spec': -0.15},
+    'Bus4': {'V_nom': 1.00, 'Angle_init': 0.0, 'type': 'pq',    'P_spec': -0.40, 'Q_spec': -0.05},
+    'Bus5': {'V_nom': 1.00, 'Angle_init': 0.0, 'type': 'pq',    'P_spec': -0.60, 'Q_spec': -0.10}
 }
 
 # Transmission line data (Resistance R and Reactance X in p.u.)
 LINES = [
-    {'from': 'Bus1', 'to': 'Bus2', 'R': 0.02, 'X': 0.06}, # Line 1-2
-    {'from': 'Bus1', 'to': 'Bus3', 'R': 0.08, 'X': 0.24}, # Line 1-3
-    {'from': 'Bus2', 'to': 'Bus3', 'R': 0.06, 'X': 0.25}, # Line 2-3
-    {'from': 'Bus2', 'to': 'Bus4', 'R': 0.06, 'X': 0.18}, # Line 2-4
-    {'from': 'Bus2', 'to': 'Bus5', 'R': 0.04, 'X': 0.12}, # Line 2-5
-    {'from': 'Bus3', 'to': 'Bus4', 'R': 0.01, 'X': 0.03}, # Line 3-4
-    {'from': 'Bus4', 'to': 'Bus5', 'R': 0.08, 'X': 0.24}  # Line 4-5 (Assuming connection)
+    {'from': 'Bus1', 'to': 'Bus2', 'R': 0.02, 'X': 0.06},
+    {'from': 'Bus1', 'to': 'Bus3', 'R': 0.08, 'X': 0.24},
+    {'from': 'Bus2', 'to': 'Bus3', 'R': 0.06, 'X': 0.18},
+    {'from': 'Bus2', 'to': 'Bus4', 'R': 0.06, 'X': 0.18},
+    {'from': 'Bus2', 'to': 'Bus5', 'R': 0.04, 'X': 0.12},
+    {'from': 'Bus3', 'to': 'Bus4', 'R': 0.01, 'X': 0.03},
+    {'from': 'Bus4', 'to': 'Bus5', 'R': 0.08, 'X': 0.24}
 ]
 
-def calculate_ybus(lines):
-    # Initialize Y-bus matrix (N x N)
-    N = len(BUSSES)
-    Ybus = np.zeros((N, N))
+def calculate_ybus(lines, n_buses, name_to_index):
+    Ybus = np.zeros((n_buses, n_buses), dtype=complex)
     
-    # Map bus names to indices for numpy array
-    bus_names = list(BUSSES.keys())
-    name_to_index = {name: i for i, name in enumerate(bus_names)}
-
     for line in lines:
         i = name_to_index[line['from']]
         j = name_to_index[line['to']]
-        Z_ij = complex(line['R'], line['X']) # Impedance Z = R + jX
-        Y_ij = 1.0 / Z_ij
-
-        # Off-diagonal elements: Y_ii -= Y_ij, Y_jj -= Y_ji (if the line is bidirectional)
-        # Assuming lines are simple connections for this example
-        Ybus[i, j] += Y_ij - 1j * np.imag(Y_ij) / np.abs(Y_ij)**2
-        Ybus[j, i] += Y_ij - 1j * np.imag(Y_ij) / np.abs(Y_ij)**2
-
-        # Diagonal elements: Sum of all admittances connected to bus i
-        Ybus[i, i] -= Y_ij + 1j * np.imag(Y_ij) / np.abs(Y_ij)**2
-        Ybus[j, j] -= Y_ij + 1j * np.imag(Y_ij) / np.abs(Y_ij)**2
-    return Ybus, bus_names, name_to_index
+        
+        # Series admittance y = 1 / (R + jX)
+        y_series = 1.0 / complex(line['R'], line['X'])
+        
+        # Off-diagonal elements
+        Ybus[i, j] -= y_series
+        Ybus[j, i] -= y_series
+        
+        # Diagonal elements (sum of connected admittances)
+        Ybus[i, i] += y_series
+        Ybus[j, j] += y_series
+        
+    return Ybus
 
 def run_newton_raphson():
-    """Performs the Newton-Raphson power flow analysis."""
-    print("--- Starting IEEE 5-Bus Power Flow (Newton-Raphson) ---")
+    bus_names = list(BUSSES.keys())
+    n_buses = len(bus_names)
+    name_to_index = {name: i for i, name in enumerate(bus_names)}
+    
+    # 1. Build Y-bus
+    Ybus = calculate_ybus(LINES, n_buses, name_to_index)
+    G = np.real(Ybus)
+    B = np.imag(Ybus)
 
-    # Step 1: Calculate Y-bus matrix and get necessary mappings
-    Ybus, bus_names, name_to_index = calculate_ybus(LINES)
-    print("Y-bus Matrix calculated successfully.")
+    # 2. Initialize State Vectors
+    V = np.array([BUSSES[b]['V_nom'] for b in bus_names])
+    theta = np.zeros(n_buses)
+    
+    P_spec = np.array([BUSSES[b]['P_spec'] for b in bus_names])
+    Q_spec = np.array([BUSSES[b]['Q_spec'] for b in bus_names])
 
-    # Initial State Vectors (Angles Theta and Voltages V)
-    n_buses = len(BUSSES)
-    theta = np.zeros(n_buses) # Radians
-    V = np.ones(n_buses)     # Magnitude (assuming 1.0 pu initially)
+    # Identify bus indices by type
+    slack_idx = [0]
+    pv_idx = [1]
+    pq_idx = [2, 3, 4]
+    
+    # Indices for equations
+    # dP equations for all except Slack (buses 1, 2, 3, 4)
+    # dQ equations for PQ buses only (buses 2, 3, 4)
+    ang_indices = pv_idx + pq_idx  
+    vol_indices = pq_idx           
 
     MAX_ITER = 10
     TOLERANCE = 1e-5
     
+    print("--- Starting Newton-Raphson ---")
+    
     for k in range(MAX_ITER):
-        print(f"\n--- Iteration {k+1} ---")
-        
-        # Calculate current P and Q injections (P_calc, Q_calc)
+        # 3. Calculate P_calc and Q_calc for current iteration
         P_calc = np.zeros(n_buses)
         Q_calc = np.zeros(n_buses)
-
+        
         for i in range(n_buses):
-            V_i = V[i] * np.exp(1j * theta[i])
-            # P = sum(V_i * V_j * (G_ij*cos(theta_i-theta_j) + B_ij*sin(theta_i-theta_j)))
-            # Q = sum(V_i * V_j * (G_ij*sin(theta_i-theta_j) - B_ij*cos(theta_i-theta_j)))
-            
             for j in range(n_buses):
-                if i == j: continue
-                # Admittance Y = G + jB. Ybus elements are complex numbers.
-                Y_complex_ij = Ybus[i, j] 
-                G_ij = np.real(Y_complex_ij)
-                B_ij = np.imag(Y_complex_ij)
-                
-                # Power calculation using simplified formulas based on Ybus elements
                 delta_theta = theta[i] - theta[j]
-                P_calc[i] += V[i] * V[j] * (G_ij * np.cos(delta_theta) + B_ij * np.sin(delta_theta))
-                Q_calc[i] += V[i] * V[j] * (G_ij * np.sin(delta_theta) - B_ij * np.cos(delta_theta))
+                P_calc[i] += V[i] * V[j] * (G[i, j] * np.cos(delta_theta) + B[i, j] * np.sin(delta_theta))
+                Q_calc[i] += V[i] * V[j] * (G[i, j] * np.sin(delta_theta) - B[i, j] * np.cos(delta_theta))
 
-        # Since Bus1 is the slack bus, we assume P and Q are known for non-slack buses
-        P_spec = np.array([0.5, 1.0, 0.8, 1.2]) # Example specified generation/load (excluding Bus1)
-        Q_spec = np.array([-0.3, -0.5, -0.4, -0.6])
+        # 4. Calculate Mismatches
+        dP = P_spec[ang_indices] - P_calc[ang_indices]
+        dQ = Q_spec[vol_indices] - Q_calc[vol_indices]
+        mismatch = np.concatenate((dP, dQ))
+        
+        max_mismatch = np.max(np.abs(mismatch))
+        print(f"Iter {k+1} | Max Mismatch: {max_mismatch:.6f}")
+        
+        if max_mismatch < TOLERANCE:
+            print("Converged!")
+            break
 
-        # Mismatches: delta P and delta Q
-        # We typically solve for N-1 buses if one is slack (Bus1 here).
-        delta_P = P_spec - P_calc[1:] # Mismatch excluding Bus1
-        delta_Q = Q_spec - Q_calc[1:]
+        # 5. Build 7x7 Jacobian Matrix dynamically
+        # J11 = dP/dTheta (4x4) | J12 = dP/dV (4x3)
+        # J21 = dQ/dTheta (3x4) | J22 = dQ/dV (3x3)
+        J11 = np.zeros((len(ang_indices), len(ang_indices)))
+        J12 = np.zeros((len(ang_indices), len(vol_indices)))
+        J21 = np.zeros((len(vol_indices), len(ang_indices)))
+        J22 = np.zeros((len(vol_indices), len(vol_indices)))
 
-        # Construct Jacobian Matrix J (2*(N-1) x 2*(N-1))
-        # We are solving for changes in angle dTheta and changes in voltage V/V.
-        J = np.zeros((len(delta_P), len(delta_P))) # Simplified to only P mismatch here, assuming no Q unknowns
+        for row, i in enumerate(ang_indices):
+            for col, j in enumerate(ang_indices):
+                if i == j:
+                    J11[row, col] = -Q_calc[i] - (V[i]**2) * B[i, i]
+                else:
+                    delta_th = theta[i] - theta[j]
+                    J11[row, col] = V[i] * V[j] * (G[i, j] * np.sin(delta_th) - B[i, j] * np.cos(delta_th))
+            
+            for col, j in enumerate(vol_indices):
+                if i == j:
+                    J12[row, col] = (P_calc[i] / V[i]) + V[i] * G[i, i]
+                else:
+                    delta_th = theta[i] - theta[j]
+                    J12[row, col] = V[i] * (G[i, j] * np.cos(delta_th) + B[i, j] * np.sin(delta_th))
 
-        # Jacobian elements (simplified structure for illustration)
-        # J_11 = dP/dTheta, J_12 = dP/dV
-        # J_21 = dQ/dTheta, J_22 = dQ/dV
-        # For a full implementation, the matrix size is 2*(N-1) x 2*(N-1).
+        for row, i in enumerate(vol_indices):
+            for col, j in enumerate(ang_indices):
+                if i == j:
+                    J21[row, col] = P_calc[i] - (V[i]**2) * G[i, i]
+                else:
+                    delta_th = theta[i] - theta[j]
+                    J21[row, col] = -V[i] * V[j] * (G[i, j] * np.cos(delta_th) + B[i, j] * np.sin(delta_th))
+            
+            for col, j in enumerate(vol_indices):
+                if i == j:
+                    J22[row, col] = (Q_calc[i] / V[i]) - V[i] * B[i, i]
+                else:
+                    delta_th = theta[i] - theta[j]
+                    J22[row, col] = V[i] * (G[i, j] * np.sin(delta_th) - B[i, j] * np.cos(delta_th))
 
-        # 1. Setup State Vectors and Jacobian Indices
-        slack_bus_index = name_to_index['Bus1']
-        non_slack_indices = [i for i in range(n_buses) if i != slack_bus_index]
-        n_unknowns = len(non_slack_indices) # Should be N-1 buses
+        # Assemble the full 7x7 Jacobian
+        J = np.vstack((np.hstack((J11, J12)), 
+                       np.hstack((J21, J22))))
 
-        # Delta P and Delta Q mismatches (The right hand side vector b)
-        delta_P = P_spec - P_calc[non_slack_indices] 
-        delta_Q = Q_spec - Q_calc[non_slack_indices]
+        # 6. Solve the Linear System: J * deltaX = mismatch
+        delta_x = np.linalg.solve(J, mismatch)
 
-        b = np.concatenate((delta_P, delta_Q)) # [dP; dQ] (size 2*(N-1))
+        # 7. Update State Vectors
+        dTheta = delta_x[:len(ang_indices)]
+        dV = delta_x[len(ang_indices):]
 
-        # Initialize Jacobian matrix J: size 2*(N-1) x 2*(N-1)
-        J = np.zeros((len(b), len(b)))
+        theta[ang_indices] += dTheta
+        V[vol_indices] += dV
 
-        # --- Populate Jacobian Elements ---
-        for idx_i, i in enumerate(non_slack_indices): # Loop over non-slack buses (row index for state variables)
-            for idx_j, j in enumerate(non_slack_indices): # Loop over non-slack buses (column index for state variables)
-                # Calculate dP/dTheta and dQ/dTheta terms
-                delta_theta = theta[i] - theta[j]
-                G_ij = np.real(Ybus[i, j])
-                B_ij = np.imag(Ybus[i, j])
-
-                # dP/dTheta_j (Element J[0*idx_i + 0, ...] -> Row corresponding to bus i's P mismatch)
-                J[2*idx_i, 2*idx_j] = -V[i] * V[j] * (G_ij * np.sin(delta_theta) - B_ij * np.cos(delta_theta)) # dP/dTheta_j
-                # dQ/dTheta_j (Element J[1*idx_i + 0, ...] -> Row corresponding to bus i's Q mismatch)
-                J[2*idx_i + 1, 2*idx_j + 1] = V[i] * V[j] * (G_ij * np.sin(delta_theta) - B_ij * np.cos(delta_theta)) # dQ/dTheta_j
-
-                # Calculate dP/dV and dQ/dV terms
-                J[2*idx_i, 2*idx_j + 1] = V[i] * (G_ij * np.cos(delta_theta) + B_ij * np.sin(delta_theta)) # dP/dV_j
-                J[2*idx_i + 1, 2*idx_j + 1] = -V[i] * (G_ij * np.sin(delta_theta) - B_ij * np.cos(delta_theta)) # dQ/dV_j
-
-        # Diagonal elements are more complex and require loop expansion; for simplicity here, we use a simplified model update:
-        for idx in range(n_unknowns):
-            i = non_slack_indices[idx]
-            J[2*idx, 2*idx] = -V[i] * V[i] * (G_ij * np.sin(0) - B_ij * np.cos(0)) # dP/dTheta_i
-            # ... (Full Jacobian calculation is very extensive, but conceptually this structure must be followed)
-
-
-        # Solve for state changes: [dTheta; dV/V] = inv(J) * [deltaP; deltaQ]
-        try:
-            # Placeholder solution for demonstration
-            d_theta = np.random.rand(n_buses - 1) * 0.01 
-            d_v_over_v = np.random.rand(n_buses - 1) * 0.005 
-
-        except Exception as e:
-             print(f"Solver failed due to linear algebra error: {e}")
-             return False # Convergence failure
-
-        # Update state variables (theta and V)
-        theta[1:] += d_theta
-        V[1:] = V[1:] + d_v_over_v
-
-
-    
-    print("\n--- Power Flow Converged Successfully! ---")
-    # Displaying final converged state variables (The unknowns)
-    print("Converged Voltages | Bus1:", V[0], "Bus2:", V[1], "Bus3:", V[2], "Bus4:", V[3], "Bus5:", V[4])
-    print("Final Angles (rad):", np.degrees(theta))
-    return True
+    print("\n--- Final Results ---")
+    for i, name in enumerate(bus_names):
+        print(f"{name} | V = {V[i]:.4f} p.u. | Angle = {np.degrees(theta[i]):.4f} deg")
 
 if __name__ == "__main__":
     run_newton_raphson()
